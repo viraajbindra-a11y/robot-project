@@ -1,0 +1,5 @@
+Flask
+numpy
+pytest
+speechrecognition
+pyttsx3
