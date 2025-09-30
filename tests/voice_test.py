@@ -1,6 +1,7 @@
 import unittest
 from src.voice import Voice
 
+
 class TestVoice(unittest.TestCase):
 
     def setUp(self):
@@ -13,6 +14,7 @@ class TestVoice(unittest.TestCase):
     def test_listen(self):
         self.voice.listen("What is your name?")
         self.assertEqual(self.voice.last_command, "What is your name?")
+
 
 if __name__ == '__main__':
     unittest.main()

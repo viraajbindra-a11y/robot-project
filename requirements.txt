@@ -3,3 +3,10 @@ numpy
 pytest
 speechrecognition
 pyttsx3
+
+# Optional (voice/chat) packages - install as needed on development or on the Pi
+openai
+vosk
+sounddevice
+# For Raspberry Pi hardware control (install on Pi)
+# gpiozero
