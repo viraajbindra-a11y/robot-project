@@ -1,23 +1,26 @@
-"""Chatbot bridge: STT -> Chat model -> TTS
+"""Chatbot bridge: STT -> Chat model -> TTS.
 
-Features:
-- Uses VOSK for speech-to-text when available, otherwise falls back to stdin input.
-- Uses OpenAI (if installed and OPENAI_API_KEY set) to generate responses; otherwise uses a simple rule-based fallback.
-- Uses pyttsx3 for text-to-speech when available, otherwise prints the response.
-- Accepts an `--attitude` argument to steer the personality of the replies.
-
-This is intentionally lightweight so it works for offline development and on a Pi.
+Works both offline (stdin + console TTS) and online (VOSK + OpenAI). It also
+supports a structured "control" mode used by the master brain to receive action
+instructions alongside dialogue.
 """
 
+from __future__ import annotations
+
 import argparse
+import json
+import logging
 import os
 import sys
-import json
 import time
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+if __package__ is None or __package__ == "":
+    sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 try:
     import openai  # type: ignore[reportMissingImports]
-    # Detect new-style client (openai>=1.0) if available
     from openai import OpenAI as _OpenAIClient  # type: ignore[reportMissingImports]
     _HAS_OPENAI = True
     _HAS_OPENAI_V1 = True
@@ -44,11 +47,24 @@ try:
 except Exception:
     _HAS_VOSK = False
 
+LOGGER = logging.getLogger(__name__)
+
+CONTROL_SYSTEM_PROMPT = (
+    "You are the control brain for a playful WALL-E style robot."
+    " Respond ONLY with JSON using this schema:\n"
+    "{\n  \"speech\": \"text the robot should speak\",\n"
+    "  \"actions\": [\n    {\"type\": \"movement|autonomy|gesture|gripper|other\", \"value\": \"...\"}\n  ]\n}"
+    " Use movement values forward, backward, left, right, stop."
+    " Use autonomy values start or stop. For gestures use wave, point, nod, salute, rest."
+    " For gripper use open, close, or toggle. Keep speech short and in character."
+)
+
 
 class Chatbot:
-    def __init__(self, attitude='friendly', simulate=False):
+    def __init__(self, attitude: str = 'friendly', simulate: bool = False, *, control_mode: bool = False):
         self.attitude = attitude
         self.simulate = simulate
+        self.control_mode = control_mode
         self.tts_engine = None
         if _HAS_PYTTSX3 and not simulate:
             try:
@@ -56,16 +72,15 @@ class Chatbot:
             except Exception:
                 self.tts_engine = None
 
-    def speak(self, text):
+    def speak(self, text: str) -> None:
         if self.tts_engine:
             self.tts_engine.say(text)
             self.tts_engine.runAndWait()
         else:
             print("[TTS]", text)
 
-    def generate_reply(self, user_text):
-        prompt = self._build_prompt(user_text)
-        # Try OpenAI if available and API key present
+    def generate_reply(self, user_text: str) -> str:
+        prompt = self._build_prompt()
         if _HAS_OPENAI and os.environ.get('OPENAI_API_KEY'):
             try:
                 if _HAS_OPENAI_V1 and _OpenAIClient is not None:
@@ -77,7 +92,6 @@ class Chatbot:
                     )
                     return resp.choices[0].message.content.strip()
                 else:
-                    # Legacy API (openai<1.0)
                     openai.api_key = os.environ.get('OPENAI_API_KEY')
                     resp = openai.ChatCompletion.create(
                         model=os.environ.get('OPENAI_MODEL', 'gpt-3.5-turbo'),
@@ -85,41 +99,149 @@ class Chatbot:
                         max_tokens=200,
                     )
                     return resp.choices[0].message.content.strip()
-            except Exception as e:
-                print("OpenAI call failed, falling back:", e)
+            except Exception as exc:
+                LOGGER.warning("OpenAI call failed, falling back: %s", exc)
 
-        # Local fallback: echo with attitude
         if self.attitude == 'grumpy':
             return f"Ugh. You said: {user_text}. Figure it out yourself."
         if self.attitude == 'cheerful':
             return f"Sure! You said: {user_text}. That's awesome! Here's an idea..."
-        # default friendly
         return f"I heard: {user_text}. How can I help further?"
 
-    def _build_prompt(self, user_text):
-        # Build a short system prompt to steer personality
-        tone = {
-            'friendly': 'You are a friendly helpful robot assistant.' ,
-            'grumpy': 'You are a grumpy, curt robot that responds with attitude.',
-            'cheerful': 'You are a very cheerful and upbeat robot.'
-        }.get(self.attitude, 'You are a friendly helpful robot assistant.')
-        return tone
+    def generate_control_reply(self, user_text: str, *, persona_text: Optional[str] = None) -> Dict[str, Any]:
+        if _HAS_OPENAI and os.environ.get('OPENAI_API_KEY'):
+            system_prompt = CONTROL_SYSTEM_PROMPT
+            if persona_text:
+                system_prompt += f"\nPersona background:\n{persona_text}\n"
+            try:
+                if _HAS_OPENAI_V1 and _OpenAIClient is not None:
+                    client = _OpenAIClient()
+                    resp = client.chat.completions.create(
+                        model=os.environ.get('OPENAI_MODEL', 'gpt-3.5-turbo'),
+                        messages=[
+                            {'role': 'system', 'content': system_prompt},
+                            {'role': 'user', 'content': user_text},
+                        ],
+                        max_tokens=250,
+                    )
+                    reply = resp.choices[0].message.content.strip()
+                else:
+                    openai.api_key = os.environ.get('OPENAI_API_KEY')
+                    resp = openai.ChatCompletion.create(
+                        model=os.environ.get('OPENAI_MODEL', 'gpt-3.5-turbo'),
+                        messages=[
+                            {'role': 'system', 'content': system_prompt},
+                            {'role': 'user', 'content': user_text},
+                        ],
+                        max_tokens=250,
+                    )
+                    reply = resp.choices[0].message.content.strip()
+                parsed = self._parse_control_json(reply)
+                if parsed is not None:
+                    return parsed
+                LOGGER.warning("Control JSON parse failed, reply=%s", reply)
+            except Exception as exc:
+                LOGGER.warning("OpenAI control call failed, falling back: %s", exc)
 
-    def listen_stdin(self):
-        # Simple stdin-based listen for offline/dev use
+        actions = self._infer_actions(user_text)
+        if actions:
+            speech = self._fallback_speech(actions)
+        else:
+            speech = self.generate_reply(user_text)
+        return {'speech': speech, 'actions': actions}
+
+    def _parse_control_json(self, reply: str) -> Optional[Dict[str, Any]]:
+        try:
+            data = json.loads(reply)
+        except Exception:
+            return None
+        speech = data.get('speech')
+        actions = data.get('actions', [])
+        if not isinstance(speech, str) or not isinstance(actions, list):
+            return None
+        normalised: List[Dict[str, str]] = []
+        for item in actions:
+            if not isinstance(item, dict):
+                continue
+            typ = item.get('type')
+            value = item.get('value')
+            if isinstance(typ, str) and isinstance(value, str):
+                normalised.append({'type': typ.lower(), 'value': value.lower()})
+        return {'speech': speech, 'actions': normalised}
+
+    def _infer_actions(self, user_text: str) -> List[Dict[str, str]]:
+        text = user_text.lower()
+        actions: List[Dict[str, str]] = []
+        if any(word in text for word in ('autonomy', 'auto', 'self drive')):
+            if any(word in text for word in ('stop', 'disable', 'off', 'halt')):
+                actions.append({'type': 'autonomy', 'value': 'stop'})
+            else:
+                actions.append({'type': 'autonomy', 'value': 'start'})
+        if any(word in text for word in ('forward', 'ahead', 'advance', 'move out')):
+            actions.append({'type': 'movement', 'value': 'forward'})
+        if any(word in text for word in ('back', 'reverse', 'backward')):
+            actions.append({'type': 'movement', 'value': 'backward'})
+        if 'left' in text:
+            actions.append({'type': 'movement', 'value': 'left'})
+        if 'right' in text:
+            actions.append({'type': 'movement', 'value': 'right'})
+        if 'stop' in text and not any(a['value'] == 'stop' for a in actions if a['type'] == 'movement'):
+            actions.append({'type': 'movement', 'value': 'stop'})
+        if any(word in text for word in ('wave', 'wave your', 'say hi', 'hello there')):
+            actions.append({'type': 'gesture', 'value': 'wave'})
+        if 'salute' in text:
+            actions.append({'type': 'gesture', 'value': 'salute'})
+        if any(word in text for word in ('point', 'point at')):
+            actions.append({'type': 'gesture', 'value': 'point'})
+        if 'nod' in text or 'yes' in text and 'head' in text:
+            actions.append({'type': 'gesture', 'value': 'nod'})
+        if any(word in text for word in ('rest arms', 'hands down', 'relax arms')):
+            actions.append({'type': 'gesture', 'value': 'rest'})
+        object_labels = {'red cube': 'red_cube', 'green cube': 'green_cube', 'blue cube': 'blue_cube', 'cube': 'red_cube', 'block': 'red_cube'}
+        grab_keywords = ('grab', 'grip', 'clamp', 'hold tight', 'pick up', 'pick it up')
+        if any(word in text for word in grab_keywords):
+            selected = None
+            for phrase, label in object_labels.items():
+                if phrase in text:
+                    selected = label
+                    break
+            if selected:
+                actions.append({'type': 'task', 'value': f'grab:{selected}'})
+            actions.append({'type': 'gripper', 'value': 'close'})
+        if any(word in text for word in ('release', 'drop', 'let go', 'open hand')):
+            actions.append({'type': 'gripper', 'value': 'open'})
+        if 'toggle gripper' in text or 'toggle claw' in text:
+            actions.append({'type': 'gripper', 'value': 'toggle'})
+        return actions
+
+    def _fallback_speech(self, actions: List[Dict[str, str]]) -> str:
+        summary = ', '.join(f"{a['type']} {a['value']}" for a in actions)
+        if self.attitude == 'grumpy':
+            return f"Fine. {summary}."
+        if self.attitude == 'cheerful':
+            return f"On it! {summary}!"
+        return f"Executing {summary}."
+
+    def _build_prompt(self) -> str:
+        return {
+            'friendly': 'You are a friendly helpful robot assistant.',
+            'grumpy': 'You are a grumpy, curt robot that responds with attitude.',
+            'cheerful': 'You are a very cheerful and upbeat robot.',
+        }.get(self.attitude, 'You are a friendly helpful robot assistant.')
+
+    def listen_stdin(self) -> str:
         print('Type a message and press Enter (or Ctrl-C to quit):')
         return sys.stdin.readline().strip()
 
-    def listen_vosk(self, model_path='model'):
+    def listen_vosk(self, model_path: str = 'model') -> None:
         if self.simulate:
             return None
         if not _HAS_VOSK:
             raise RuntimeError('vosk not available')
         if not os.path.exists(model_path):
-            raise RuntimeError(f'VOSK model not found at {model_path}. Download and extract a model into that path.')
+            raise RuntimeError(f'VOSK model not found at {model_path}')
 
         model = Model(model_path)
-        # use default device and settings
         samplerate = 16000
         device_info = sd.query_devices(kind='input')
         if 'default_samplerate' in device_info:
@@ -127,11 +249,12 @@ class Chatbot:
 
         rec = KaldiRecognizer(model, samplerate)
         print('Listening (press Ctrl-C to stop)')
+
         def callback(indata, frames, time_info, status):
             if rec.AcceptWaveform(indata.tobytes()):
                 res = rec.Result()
-                j = json.loads(res)
-                text = j.get('text', '')
+                payload = json.loads(res)
+                text = payload.get('text', '')
                 if text:
                     print('[STT]', text)
 
@@ -140,39 +263,40 @@ class Chatbot:
                 time.sleep(0.1)
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser(description='Chatbot bridge: STT -> Chat -> TTS')
     parser.add_argument('--attitude', default='friendly', choices=['friendly', 'cheerful', 'grumpy'])
-    parser.add_argument('--simulate', action='store_true', help="Don't use audio devices; read text from stdin and print TTS")
+    parser.add_argument('--simulate', action='store_true', help="Use stdin/stdout instead of audio devices")
     parser.add_argument('--vosk-model', default='model', help='Path to VOSK model directory')
     parser.add_argument('--persona-file', default=None, help='Path to a persona file to use as system prompt')
+    parser.add_argument('--control', action='store_true', help='Print structured control JSON instead of TTS')
     args = parser.parse_args()
 
     persona_text = None
     if args.persona_file:
         try:
-            with open(args.persona_file, 'r', encoding='utf-8') as f:
-                persona_text = f.read()
-        except Exception as e:
-            print('Failed to read persona file:', e)
+            with open(args.persona_file, 'r', encoding='utf-8') as handle:
+                persona_text = handle.read()
+        except Exception as exc:
+            print('Failed to read persona file:', exc)
 
-    bot = Chatbot(attitude=args.attitude, simulate=args.simulate)
+    bot = Chatbot(attitude=args.attitude, simulate=args.simulate, control_mode=args.control)
 
     try:
         while True:
             if _HAS_VOSK and not args.simulate:
-                print('VOSK mode not fully interactive in this demo. Falling back to stdin.')
-                user = bot.listen_stdin()
-            else:
-                user = bot.listen_stdin()
+                print('VOSK live capture not fully wired in this CLI demo; using stdin fallback.')
+            user = bot.listen_stdin()
             if not user:
                 continue
             if user.lower() in ('quit', 'exit'):
                 print('Goodbye')
                 break
 
-            # If persona text is provided, prefer OpenAI with persona as system prompt
-            if persona_text and _HAS_OPENAI and os.environ.get('OPENAI_API_KEY'):
+            if args.control:
+                payload = bot.generate_control_reply(user, persona_text=persona_text)
+                print(json.dumps(payload, indent=2))
+            elif persona_text and _HAS_OPENAI and os.environ.get('OPENAI_API_KEY'):
                 try:
                     if _HAS_OPENAI_V1 and _OpenAIClient is not None:
                         client = _OpenAIClient()
@@ -190,19 +314,13 @@ def main():
                             max_tokens=300,
                         )
                         reply = resp.choices[0].message.content.strip()
-                except Exception as e:
-                    print('OpenAI persona call failed, falling back:', e)
+                except Exception as exc:
+                    print('OpenAI persona call failed, falling back:', exc)
                     reply = bot.generate_reply(user)
+                bot.speak(reply)
             else:
-                # For fallback, bias the reply by embedding a short prefix from persona_text if available
-                if persona_text:
-                    # use first 200 chars as a style hint
-                    style_hint = persona_text[:200]
-                    reply = f"{style_hint}\n{bot.generate_reply(user)}"
-                else:
-                    reply = bot.generate_reply(user)
-
-            bot.speak(reply)
+                reply = bot.generate_reply(user)
+                bot.speak(reply)
     except KeyboardInterrupt:
         print('\nInterrupted')
 

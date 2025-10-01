@@ -8,19 +8,33 @@ for building more complex robotic applications.
 ```
 robot-project
 ├── src
-│   ├── robot.py          # Main entry point for the robot application
-│   ├── movement.py       # Contains the Movement class for robot control
-│   ├── voice.py          # Contains the Voice class for interaction
+│   ├── main.py                # Master control loop tying all subsystems together
+│   ├── movement.py            # Differential drive helper (simulation + gpiozero)
+│   ├── pwm_control.py         # Fine-grained PWM motor speed helper
+│   ├── auto_drive.py          # Obstacle avoidance driver
+│   ├── ultrasonic_test.py     # CLI distance sampler
+│   ├── obstacle_avoid.py      # Obstacle avoidance CLI runner
+│   ├── battery_check.py       # Battery voltage monitor utilities
+│   ├── safe_shutdown.py       # Critical battery handling and shutdown
+│   ├── voice.py               # Speech I/O abstraction
+│   ├── tts_test.py / stt_test.py  # Quick voice diagnostics
+│   ├── voice_drive.py         # Voice → movement teleop
+│   ├── attitude_drive.py      # Personality-aware teleop
+│   ├── camera_vision.py       # Optional OpenCV helper
+│   ├── vision_chat.py         # Camera + persona demo loop
+│   ├── object_perception.py   # Colour-based object perception with simulation fallback
+│   ├── gesture_control.py     # Servo gesture poses
+│   ├── gripper_control.py     # Simple servo gripper controller
+│   ├── personality_adapter.py # WALL·E-style response shaping
 │   └── utils
-│       └── __init__.py   # Initializes the utils package
-├── tests
-│   ├── movement_test.py   # Unit tests for the Movement class
-│   └── voice_test.py      # Unit tests for the Voice class
+│       ├── __init__.py
+│       └── adc.py             # Optional ADS1115 voltage reader
+├── tests                      # Unit test suite for each module
 ├── scripts
-│   └── sync_to_pi.sh      # Script to synchronize files to Raspberry Pi
-├── .gitignore              # Specifies files to ignore in Git
-├── requirements.txt        # Lists Python dependencies
-└── README.md               # Documentation for the project
+│   ├── setup_pi.sh            # Bootstraps a Raspberry Pi with system deps
+│   └── sync_to_pi.sh          # Synchronize files to Raspberry Pi
+├── requirements.txt
+└── README.md
 ```
 
 ## Setup Instructions
@@ -32,25 +46,44 @@ robot-project
   ```bash
   cd robot-project
   ```
-3. Install the required dependencies:
+3. (Optional) On Raspberry Pi, run the bootstrap script once:
+  ```bash
+  sudo ./scripts/setup_pi.sh
+  ```
+4. Install the required Python dependencies (in your venv if using one):
   ```bash
   pip install -r requirements.txt
   ```
 
 ## Usage
-- To run the robot application, execute the following command:
+- Master control loop (chatbot-in-the-loop, runs voice → ChatGPT → actions):
   ```bash
-  python src/robot.py
+  python3 src/main.py --simulate
+  ```
+  Toggle autonomy directly in conversation (“start autonomy”, “stop autonomy”). On hardware add `--auto`, supply sensor pins (`--sensor-echo 24 --sensor-trigger 25` for example), arm servo pins (`--left-servo 5 --right-servo 6`), an optional gripper servo (`--gripper-servo 12`), and set motor/battery flags as needed. For camera-based grab planning plug in a USB camera and pass `--camera-index 0` (default).
+- Voice teleop:
+  ```bash
+  python3 src/voice_drive.py --simulate
+  ```
+- Personality + movement loop:
+  ```bash
+  python3 src/attitude_drive.py --persona src/personas/wallee.txt
+  ```
+- Obstacle avoidance and sensors:
+  ```bash
+  python3 src/obstacle_avoid.py --echo 24 --trigger 25
+  python3 src/ultrasonic_test.py --echo 24 --trigger 25
+  ```
+- Diagnostics for speech I/O:
+  ```bash
+  python3 src/tts_test.py "Hello human"
+  python3 src/stt_test.py --timeout 3
   ```
 
 ## Testing
-- To run the tests for the Movement class:
+- Run the entire suite:
   ```bash
-  python -m unittest tests/movement_test.py
-  ```
-- To run the tests for the Voice class:
-  ```bash
-  python -m unittest tests/voice_test.py
+  python3 -m unittest discover -s tests -p "*_test.py"
   ```
 
 ## Synchronization with Raspberry Pi
@@ -98,6 +131,11 @@ Safety:
 - Chatbot bridge with STT → Chat → TTS: `src/chatbot.py`
 - Persona file (cracked saga WALL‑E vibe): `src/personas/wallee.txt`
 - Quick launcher (local stdin or Pi audio): `scripts/talk_wallee.sh`
+- Structured control mode (returns JSON directives for the master loop):
+  ```bash
+  python3 src/chatbot.py --simulate --control --persona-file src/personas/wallee.txt
+  ```
+  Useful for validating how conversations map to movement/autonomy/gesture/gripper commands.
 
 Examples:
 ```bash
@@ -111,22 +149,48 @@ export OPENAI_API_KEY=... && bash scripts/talk_wallee.sh --no-sim
 ## Autonomy (Obstacle Avoidance)
 Basic avoid‑obstacles loop using an ultrasonic sensor.
 
-- Module: `src/autonomy.py`
+- Module: `src/autonomy.py` / `src/auto_drive.py`
 - Sensor wrapper: `src/sensors.py` (uses `gpiozero.DistanceSensor` if available, else simulation)
+- CLI helpers: `src/ultrasonic_test.py`, `src/obstacle_avoid.py`
+- Wall guard: `src/wall_guard.py` automatically halts forward motion when the front sensor says the path is too close.
 
 Run:
 ```bash
 # Simulation
-python3 src/autonomy.py --simulate
+python3 src/obstacle_avoid.py --simulate
 
 # On Pi (example pins; choose pins that don't conflict with motors)
-python3 src/autonomy.py --echo 24 --trigger 25
+python3 src/obstacle_avoid.py --echo 24 --trigger 25
 ```
+
+## Power & Safety
+- Battery monitor utilities: `src/battery_check.py`
+- Safe shutdown helper: `src/safe_shutdown.py`
+- Optional ADS1115 reader: `src/utils/adc.py` (install `adafruit-circuitpython-ads1x15`)
+
+Expose the current voltage via environment variable (no ADC):
+```bash
+export ROBOT_BATTERY_VOLTS=12.4
+python3 src/main.py --battery-driver env
+```
+
+Using ADS1115 (channel 0, gain 1) with a 2:1 voltage divider:
+```bash
+python3 src/main.py --battery-driver ads1115 --battery-ads-channel 0 --battery-divider-ratio 2.0
+```
+
+## Vision & Gestures
+- Camera helper and demo loop: `src/camera_vision.py`, `src/vision_chat.py`
+- Servo gestures: `src/gesture_control.py`
+- Gripper control: `src/gripper_control.py`
+- Chatbot-triggered poses and grip: ask the robot to “wave”, “salute”, “nod”, “grab that cube”, or “release it” while `src/main.py` is running.
+- Install `opencv-python` for vision and compatible servo drivers for arms/grippers.
 
 ## Dependencies
 - Install base deps: `pip install -r requirements.txt`
 - On Raspberry Pi for motors/sensors: `pip install gpiozero` (or `sudo apt install python3-gpiozero`)
-- Optional for voice: `pyttsx3`, `vosk`, `sounddevice`. For OpenAI: set `OPENAI_API_KEY`.
+- Optional for voice: `pyttsx3`, `vosk`, `sounddevice`, `pyaudio`. For OpenAI: set `OPENAI_API_KEY`.
+- Optional for vision: `opencv-python` (or `sudo apt install python3-opencv`).
 
 ## Sync to Raspberry Pi
 ```bash

@@ -25,9 +25,12 @@ for arg in "$@"; do
   esac
 done
 
+CMD=(python3 src/chatbot.py --persona-file src/personas/wallee.txt)
 if [ "$SIMULATE" = true ]; then
-  python3 src/chatbot.py --simulate --persona-file src/personas/wallee.txt "${EXTRA_ARGS[@]}"
-else
-  python3 src/chatbot.py --persona-file src/personas/wallee.txt "${EXTRA_ARGS[@]}"
+  CMD+=(--simulate)
+fi
+if [ ${#EXTRA_ARGS[@]} -gt 0 ]; then
+  CMD+=("${EXTRA_ARGS[@]}")
 fi
 
+"${CMD[@]}"

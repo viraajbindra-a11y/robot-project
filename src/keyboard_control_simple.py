@@ -8,11 +8,16 @@ Usage:
 """
 
 import argparse
+import select
 import sys
 import termios
-import tty
-import select
 import time
+import tty
+from pathlib import Path
+
+if __package__ is None or __package__ == "":
+    sys.path.append(str(Path(__file__).resolve().parents[1]))
+
 from src.movement import Movement
 
 

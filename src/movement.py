@@ -1,21 +1,25 @@
 """Movement controller for the robot.
 
-This module provides a Movement class that talks to two motors (left/right).
-It prefers gpiozero.Motor when available (recommended on Raspberry Pi). If
-gpiozero is not installed or you're running on your development machine,
-the methods will fall back to a small simulation so you can test without hardware.
-
-Configure the GPIO pins when creating the Movement object. Defaults are
-reasonable examples, but you must set them to match your wiring.
+This module provides a Movement class that coordinates the left/right motors.
+When running on a Raspberry Pi with gpiozero installed we talk to the real
+hardware. Otherwise we transparently fall back to a simulation so the rest of
+the application can keep running with predictable behaviour.
 """
+
+from __future__ import annotations
+
+import logging
+from typing import Optional, Tuple
 
 try:
     from gpiozero import Motor  # type: ignore[reportMissingImports]
-except Exception:
+except Exception:  # pragma: no cover - best effort import guard
     Motor = None
 
+CARDINAL_DIRECTIONS = ('N', 'E', 'S', 'W')
 
-def _dir_to_delta(direction):
+
+def _dir_to_delta(direction: str) -> Tuple[int, int]:
     """Convert cardinal direction to (dx, dy)."""
     return {
         'N': (0, 1),
@@ -25,35 +29,55 @@ def _dir_to_delta(direction):
     }[direction]
 
 
-def _rotate_left(direction):
+def _rotate_left(direction: str) -> str:
     order = ['N', 'W', 'S', 'E']
     return order[(order.index(direction) + 1) % 4]
 
 
-def _rotate_right(direction):
+def _rotate_right(direction: str) -> str:
     order = ['N', 'E', 'S', 'W']
     return order[(order.index(direction) + 1) % 4]
 
 
 class Movement:
-    def __init__(self, left_pins=(17, 18), right_pins=(22, 23), simulate: bool = False):
+    """High-level motor controller with simulation fallback."""
+
+    def __init__(
+        self,
+        left_pins: Tuple[int, int] = (17, 18),
+        right_pins: Tuple[int, int] = (22, 23),
+        simulate: bool = False,
+        *,
+        logger: Optional[logging.Logger] = None,
+        sim_step: float = 1.0,
+    ) -> None:
         """Create a Movement controller.
 
-        left_pins/right_pins: tuples (forward_pin, backward_pin) for each motor.
-        These are BCM GPIO numbers. Adjust to match your wiring.
+        Args:
+            left_pins: (forward_pin, backward_pin) tuple for the left motor.
+            right_pins: (forward_pin, backward_pin) tuple for the right motor.
+            simulate: Force the software simulation even if gpiozero is present.
+            logger: Optional logger. Defaults to a module-level logger.
+            sim_step: Distance (in arbitrary units) that corresponds to full
+                speed in the simulation. Allows callers to scale the virtual
+                motion to match their scenarios.
         """
+
+        if sim_step <= 0:
+            raise ValueError("sim_step must be positive")
+
         self.left_pins = left_pins
         self.right_pins = right_pins
 
+        self._logger = logger or logging.getLogger(__name__)
+        self._sim_step = float(sim_step)
+        self._last_action: Tuple[str, float] = ("stop", 0.0)
+
         # Simulation state (used when hardware not present)
-        # position is an (x, y) coordinate on a simple grid
-        self.position = [0, 0]
-        # direction is one of 'N', 'E', 'S', 'W'
+        self.position = [0.0, 0.0]
         self.direction = 'N'
 
-        # If simulate=True, force software simulation even if gpiozero is present.
         if Motor and not simulate:
-            # gpiozero Motor(forward, backward)
             self.left = Motor(forward=left_pins[0], backward=left_pins[1])
             self.right = Motor(forward=right_pins[0], backward=right_pins[1])
             self._hw = True
@@ -62,53 +86,93 @@ class Movement:
             self.right = None
             self._hw = False
 
-    def move_forward(self, speed=1.0):
-        """Move forward. Speed between 0 (stop) and 1 (full)."""
+    @property
+    def is_simulation(self) -> bool:
+        return not self._hw
+
+    @property
+    def last_action(self) -> Tuple[str, float]:
+        """Return the last command issued to the controller."""
+        return self._last_action
+
+    def reset(self) -> None:
+        """Reset the simulated position/direction to their defaults."""
+        self.position = [0.0, 0.0]
+        self.direction = 'N'
+        self._record_action('reset', 0.0)
+        if self.is_simulation:
+            self._logger.debug("Simulation reset to origin facing north")
+
+    def move_forward(self, speed: float = 1.0) -> None:
+        """Move forward. Speed is clamped between 0 (stop) and 1 (full)."""
+        speed = self._clamp_speed(speed)
+        self._record_action('forward', speed)
         if self._hw:
             self.left.forward(speed)
             self.right.forward(speed)
         else:
-            # simple grid step: move one unit in current direction
-            dx, dy = _dir_to_delta(self.direction)
-            self.position[0] += dx
-            self.position[1] += dy
-            print(f"[SIM] move_forward speed={speed} -> position={self.position}")
+            self._advance_simulation(speed)
 
-    def move_backward(self, speed=1.0):
+    def move_backward(self, speed: float = 1.0) -> None:
         """Move backward."""
+        speed = self._clamp_speed(speed)
+        self._record_action('backward', speed)
         if self._hw:
             self.left.backward(speed)
             self.right.backward(speed)
         else:
-            dx, dy = _dir_to_delta(self.direction)
-            self.position[0] -= dx
-            self.position[1] -= dy
-            print(f"[SIM] move_backward speed={speed} -> position={self.position}")
+            self._advance_simulation(-speed)
 
-    def turn_left(self, speed=1.0):
+    def turn_left(self, speed: float = 1.0) -> None:
         """Turn left in place: left motor backward, right motor forward."""
+        speed = self._clamp_speed(speed)
+        self._record_action('turn_left', speed)
         if self._hw:
             self.left.backward(speed)
             self.right.forward(speed)
         else:
-            # rotate direction left (N->W->S->E->N)
             self.direction = _rotate_left(self.direction)
-            print(f"[SIM] turn_left speed={speed} -> direction={self.direction}")
+            self._logger.debug("Simulation direction -> %s", self.direction)
 
-    def turn_right(self, speed=1.0):
+    def turn_right(self, speed: float = 1.0) -> None:
         """Turn right in place: left forward, right backward."""
+        speed = self._clamp_speed(speed)
+        self._record_action('turn_right', speed)
         if self._hw:
             self.left.forward(speed)
             self.right.backward(speed)
         else:
-            # rotate direction right (N->E->S->W->N)
             self.direction = _rotate_right(self.direction)
-            print(f"[SIM] turn_right speed={speed} -> direction={self.direction}")
+            self._logger.debug("Simulation direction -> %s", self.direction)
 
-    def stop(self):
+    def stop(self) -> None:
         """Stop both motors."""
+        self._record_action('stop', 0.0)
         if self._hw:
             self.left.stop()
             self.right.stop()
         else:
-            print("[SIM] stop")
+            self._logger.debug("Simulation stop")
+
+    def _record_action(self, action: str, speed: float) -> None:
+        self._last_action = (action, speed)
+
+    def _clamp_speed(self, speed: float) -> float:
+        if speed < 0:
+            raise ValueError("speed must be non-negative")
+        clamped = min(float(speed), 1.0)
+        if clamped != speed:
+            self._logger.debug("Clamped speed from %s to %s", speed, clamped)
+        return clamped
+
+    def _advance_simulation(self, scaled_speed: float) -> None:
+        distance = self._sim_step * scaled_speed
+        dx, dy = _dir_to_delta(self.direction)
+        self.position[0] += dx * distance
+        self.position[1] += dy * distance
+        self._logger.debug(
+            "Simulation move -> pos=(%.3f, %.3f) dir=%s",
+            self.position[0],
+            self.position[1],
+            self.direction,
+        )

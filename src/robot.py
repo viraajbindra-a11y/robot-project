@@ -1,3 +1,9 @@
+import sys
+from pathlib import Path
+
+if __package__ is None or __package__ == "":
+    sys.path.append(str(Path(__file__).resolve().parents[1]))
+
 from src.movement import Movement
 from src.voice import Voice
 

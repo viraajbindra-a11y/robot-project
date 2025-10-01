@@ -3,10 +3,17 @@ numpy
 pytest
 speechrecognition
 pyttsx3
+requests
 
 # Optional (voice/chat) packages - install as needed on development or on the Pi
 openai
 vosk
 sounddevice
+# Optional camera/vision stack
+opencv-python
+
 # For Raspberry Pi hardware control (install on Pi)
 # gpiozero
+# RPi.GPIO
+# adafruit-circuitpython-ads1x15  # ADC support for battery monitor
+# pyaudio  # Required by SpeechRecognition for mic input

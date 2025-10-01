@@ -58,3 +58,31 @@ class UltrasonicSensor:
             return meters * 100.0
         except Exception:
             return None
+
+
+class DistanceSensorWrapper:
+    """Higher-level helper with caching and shutdown support."""
+
+    def __init__(self, *, echo: Optional[int] = None, trigger: Optional[int] = None, simulate: bool = False):
+        self._sensor = UltrasonicSensor(echo=echo, trigger=trigger, simulate=simulate)
+        self._last_read_cm: Optional[float] = None
+
+    @property
+    def distance_cm(self) -> float:
+        reading = self._sensor.read_distance_cm()
+        if reading is None:
+            return -1.0
+        self._last_read_cm = reading
+        return reading
+
+    def set_simulated_distance(self, cm: Optional[float]) -> None:
+        self._sensor.set_simulated_distance(cm)
+
+    def close(self) -> None:
+        # gpiozero sensors expose close(); simulation ignores it
+        sensor = getattr(self._sensor, '_sensor', None)
+        if sensor is not None:
+            try:
+                sensor.close()  # type: ignore[attr-defined]
+            except Exception:
+                pass
