@@ -41,6 +41,15 @@ class TestChatbotControl(unittest.TestCase):
         result = self.bot.generate_control_reply('Do you see the orange mug?')
         self.assertTrue(any(a['type'] == 'vision' and a['value'] == 'describe:orange_mug' for a in result['actions']))
 
+    def test_arm_adjustment(self):
+        result = self.bot.generate_control_reply('Raise left arm and lower right arm')
+        self.assertTrue(any(a['type'] == 'arms' and a['value'].startswith('adjust:0.200:0.000') for a in result['actions']))
+        self.assertTrue(any(a['type'] == 'arms' and a['value'].startswith('adjust:0.000:-0.200') for a in result['actions']))
+
+    def test_arm_set(self):
+        result = self.bot.generate_control_reply('Set left arm to 0.5 and right arm to -0.3')
+        self.assertTrue(any(a['type'] == 'arms' and a['value'].startswith('set:0.500:-0.300') for a in result['actions']))
+
 
 if __name__ == '__main__':
     unittest.main()

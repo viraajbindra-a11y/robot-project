@@ -166,9 +166,10 @@ python3 src/obstacle_avoid.py --echo 24 --trigger 25
 
 ## Object Perception
 - Module: `src/object_perception.py`
-- Recognises simple coloured shapes (cubes, cones/signs) via OpenCV when available, with a simulation fallback.
+- Recognises simple coloured shapes (cubes, cones/signs) via OpenCV when available, with a simulation fallback and Google Vision integration.
 - Call `ObjectRecognizer.describe_observations()` to get quick natural-language descriptions (colour, shape, distance, direction).
 - Supply a custom colour-profile JSON via `--vision-colors path/to/colors.json`. Remote APIs (see `src/remote_vision.py`) feed into the same narration pipeline.
+- Google Cloud Vision support: add `--google-vision-key $KEY` (and optionally `--google-vision-features OBJECT_LOCALIZATION`) to delegate perception to the cloud while keeping narration local.
 
 ## Power & Safety
 - Battery monitor utilities: `src/battery_check.py`
@@ -188,9 +189,9 @@ python3 src/main.py --battery-driver ads1115 --battery-ads-channel 0 --battery-d
 
 ## Vision & Gestures
 - Camera helper and demo loop: `src/camera_vision.py`, `src/vision_chat.py`
-- Servo gestures: `src/gesture_control.py`
+- Servo gestures and raw arm control: `src/gesture_control.py`
 - Gripper control: `src/gripper_control.py`
-- Chatbot-triggered poses and grip: ask the robot to “wave”, “salute”, “nod”, “grab that cube”, or “release it” while `src/main.py` is running.
+- Chatbot-triggered poses and grip: ask the robot to “wave”, “salute”, “nod”, “grab that cube”, or “release it” while `src/main.py` is running. You can now say “set left arm to 0.5”, “raise both arms”, or “lower right arm” for precise positioning.
 - Install `opencv-python` for vision and compatible servo drivers for arms/grippers.
 
 ## Dependencies

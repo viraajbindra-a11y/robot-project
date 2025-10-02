@@ -11,6 +11,7 @@ import argparse
 import json
 import logging
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -182,9 +183,9 @@ class Chatbot:
             actions.append({'type': 'movement', 'value': 'forward'})
         if any(word in text for word in ('back', 'reverse', 'backward')):
             actions.append({'type': 'movement', 'value': 'backward'})
-        if 'left' in text:
+        if 'left' in text and 'left arm' not in text:
             actions.append({'type': 'movement', 'value': 'left'})
-        if 'right' in text:
+        if 'right' in text and 'right arm' not in text:
             actions.append({'type': 'movement', 'value': 'right'})
         if 'stop' in text and not any(a['value'] == 'stop' for a in actions if a['type'] == 'movement'):
             actions.append({'type': 'movement', 'value': 'stop'})
@@ -242,6 +243,9 @@ class Chatbot:
             actions.append({'type': 'gripper', 'value': 'open'})
         if 'toggle gripper' in text or 'toggle claw' in text:
             actions.append({'type': 'gripper', 'value': 'toggle'})
+
+        arm_actions = self._infer_arm_actions(text)
+        actions.extend(arm_actions)
         return actions
 
     def _fallback_speech(self, actions: List[Dict[str, str]]) -> str:
@@ -252,11 +256,55 @@ class Chatbot:
             if self.attitude == 'cheerful':
                 return 'Scanning the scene!'
             return 'Let me take a look.'
+        if any(a['type'] == 'arms' for a in actions):
+            if self.attitude == 'grumpy':
+                return 'Moving the arms. Don’t make me drop anything.'
+            if self.attitude == 'cheerful':
+                return 'Arms moving! Flex time!'
+            return 'Adjusting the arms.'
         if self.attitude == 'grumpy':
             return f"Fine. {summary}."
         if self.attitude == 'cheerful':
             return f"On it! {summary}!"
         return f"Executing {summary}."
+
+    def _infer_arm_actions(self, text: str) -> List[Dict[str, str]]:
+        actions: List[Dict[str, str]] = []
+        if 'arm' not in text:
+            return actions
+
+        numbers = [float(match.group()) for match in re.finditer(r'-?\d+(?:\.\d+)?', text)]
+        clamp = lambda value: max(-1.0, min(1.0, value))
+
+        def build_action(kind: str, left: float, right: float) -> None:
+            actions.append({'type': 'arms', 'value': f'{kind}:{left:.3f}:{right:.3f}'})
+
+        if 'set arms' in text or 'set left arm' in text or 'set right arm' in text:
+            if 'left' in text and 'right' in text and len(numbers) >= 2:
+                build_action('set', clamp(numbers[0]), clamp(numbers[1]))
+                return actions
+            if 'left' in text and numbers:
+                build_action('set_left', clamp(numbers[0]), 0.0)
+                return actions
+            if 'right' in text and numbers:
+                build_action('set_right', 0.0, clamp(numbers[0]))
+                return actions
+            if len(numbers) >= 2:
+                build_action('set', clamp(numbers[0]), clamp(numbers[1]))
+                return actions
+        if any(phrase in text for phrase in ('raise left arm', 'lift left arm')):
+            build_action('adjust', 0.2, 0.0)
+        if any(phrase in text for phrase in ('lower left arm', 'drop left arm')):
+            build_action('adjust', -0.2, 0.0)
+        if any(phrase in text for phrase in ('raise right arm', 'lift right arm')):
+            build_action('adjust', 0.0, 0.2)
+        if any(phrase in text for phrase in ('lower right arm', 'drop right arm')):
+            build_action('adjust', 0.0, -0.2)
+        if 'raise both arms' in text or 'arms up' in text:
+            build_action('adjust', 0.2, 0.2)
+        if 'arms down' in text or 'lower both arms' in text:
+            build_action('adjust', -0.2, -0.2)
+        return actions
 
     def _build_prompt(self) -> str:
         return {

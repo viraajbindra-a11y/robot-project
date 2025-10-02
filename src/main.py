@@ -21,6 +21,7 @@ from src.gripper_control import GripperController
 from src.movement import Movement
 from src.object_perception import ObjectRecognizer
 from src.remote_vision import RemoteVisionClient
+from src.cloud_vision import GoogleVisionClient, DEFAULT_ENDPOINT as GOOGLE_DEFAULT_ENDPOINT
 from src.personality_adapter import PersonalityAdapter, DEFAULT_PERSONA, load_persona_from_file
 from src.safe_shutdown import SafeShutdown
 from src.sensors import DistanceSensorWrapper
@@ -58,6 +59,9 @@ def run_master(
     camera_index: int,
     vision_endpoint: Optional[str],
     vision_key: Optional[str],
+    google_vision_key: Optional[str],
+    google_vision_endpoint: Optional[str],
+    google_vision_features: Optional[Sequence[str]],
     color_config_path: Optional[str],
 ) -> None:
     logging.basicConfig(level=logging.INFO)
@@ -90,6 +94,19 @@ def run_master(
             LOGGER.warning("Remote vision unavailable (%s); falling back to local/simulated perception", exc)
             remote_client = None
 
+    google_client = None
+    if google_vision_key and not simulate:
+        try:
+            google_client = GoogleVisionClient(
+                api_key=google_vision_key,
+                camera_index=camera_index,
+                endpoint=google_vision_endpoint or GOOGLE_DEFAULT_ENDPOINT,
+                features=google_vision_features,
+            )
+        except Exception as exc:
+            LOGGER.warning("Google Vision unavailable (%s); continuing without it", exc)
+            google_client = None
+
     color_override = None
     if color_config_path:
         try:
@@ -101,7 +118,7 @@ def run_master(
         simulate=simulate,
         camera_index=camera_index,
         color_map=color_override,
-        remote_client=remote_client,
+        remote_client=google_client or remote_client,
     )
 
     front_sensor: Optional[DistanceSensorWrapper] = None
@@ -207,6 +224,25 @@ def run_master(
                     gripper.open()
                 elif value == 'toggle':
                     gripper.toggle()
+            elif typ == 'arms' and value:
+                parts = value.split(':')
+                if len(parts) == 3:
+                    mode, left_raw, right_raw = parts
+                    try:
+                        left_val = float(left_raw)
+                        right_val = float(right_raw)
+                    except ValueError:
+                        continue
+                    if mode == 'set':
+                        gesture_controller.set_positions(left_val, right_val)
+                    elif mode == 'set_left':
+                        current_left, current_right = gesture_controller.positions
+                        gesture_controller.set_positions(left_val, current_right)
+                    elif mode == 'set_right':
+                        current_left, current_right = gesture_controller.positions
+                        gesture_controller.set_positions(current_left, right_val)
+                    elif mode == 'adjust':
+                        gesture_controller.adjust(left_val, right_val)
             elif typ == 'task' and value:
                 if value.startswith('grab:'):
                     label = value.split(':', 1)[1]
@@ -282,6 +318,16 @@ def run_master(
         gesture_controller.close()
         gripper.close_controller()
         recognizer.close()
+        if remote_client:
+            try:
+                remote_client.close()
+            except Exception:
+                pass
+        if google_client:
+            try:
+                google_client.close()
+            except Exception:
+                pass
         if wall_guard:
             wall_guard.close()
 
@@ -307,6 +353,9 @@ def main() -> None:
     parser.add_argument('--camera-index', type=int, default=0, help='Camera index for object perception')
     parser.add_argument('--vision-endpoint', help='URL of the remote vision API')
     parser.add_argument('--vision-key', help='API key/token for the remote vision API')
+    parser.add_argument('--google-vision-key', help='Google Vision API key (OBJECT_LOCALIZATION)')
+    parser.add_argument('--google-vision-endpoint', help='Custom Google Vision endpoint override')
+    parser.add_argument('--google-vision-features', nargs='*', help='Google Vision feature list (default OBJECT_LOCALIZATION)')
     parser.add_argument('--vision-colors', help='Path to JSON colour profile for perception')
     args = parser.parse_args()
 
@@ -330,6 +379,9 @@ def main() -> None:
         camera_index=args.camera_index,
         vision_endpoint=args.vision_endpoint,
         vision_key=args.vision_key,
+        google_vision_key=args.google_vision_key,
+        google_vision_endpoint=args.google_vision_endpoint,
+        google_vision_features=args.google_vision_features,
         color_config_path=args.vision_colors,
     )
 

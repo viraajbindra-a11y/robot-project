@@ -35,6 +35,8 @@ class GestureController:
         self.simulate = simulate or Servo is None or left_servo_pin is None or right_servo_pin is None
         self.left_servo = None
         self.right_servo = None
+        self._current_left = 0.0
+        self._current_right = 0.0
         if not self.simulate and Servo:
             try:  # pragma: no cover - hardware specific
                 self.left_servo = Servo(left_servo_pin)
@@ -61,14 +63,28 @@ class GestureController:
             time.sleep(0.2)
             self._set_positions(*target)
 
+    def set_positions(self, left: float, right: float) -> None:
+        """Directly command servo positions (-1..1)."""
+        self._set_positions(left, right)
+
+    def adjust(self, left_delta: float = 0.0, right_delta: float = 0.0) -> None:
+        """Apply deltas to the current servo positions."""
+        self._set_positions(self._current_left + left_delta, self._current_right + right_delta)
+
+    @property
+    def positions(self) -> tuple[float, float]:
+        return self._current_left, self._current_right
+
     def _set_positions(self, left: float, right: float) -> None:
         if self.simulate:
             LOGGER.debug("[SIM] Servo positions left=%s right=%s", left, right)
-            return
-        if self.left_servo is not None:
-            self.left_servo.value = max(-1.0, min(1.0, left))
-        if self.right_servo is not None:
-            self.right_servo.value = max(-1.0, min(1.0, right))
+        else:
+            if self.left_servo is not None:
+                self.left_servo.value = max(-1.0, min(1.0, left))
+            if self.right_servo is not None:
+                self.right_servo.value = max(-1.0, min(1.0, right))
+        self._current_left = max(-1.0, min(1.0, left))
+        self._current_right = max(-1.0, min(1.0, right))
 
     def close(self) -> None:
         self.perform('rest')
