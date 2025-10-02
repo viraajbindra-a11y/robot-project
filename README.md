@@ -163,6 +163,11 @@ python3 src/obstacle_avoid.py --simulate
 python3 src/obstacle_avoid.py --echo 24 --trigger 25
 ```
 
+## Object Perception
+- Module: `src/object_perception.py`
+- Recognises simple coloured shapes (cubes, cones/signs) via OpenCV when available, with a simulation fallback.
+- Call `ObjectRecognizer.describe_observations()` to get quick natural-language descriptions (colour, shape, distance, direction).
+
 ## Power & Safety
 - Battery monitor utilities: `src/battery_check.py`
 - Safe shutdown helper: `src/safe_shutdown.py`

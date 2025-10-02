@@ -3,10 +3,9 @@
 from __future__ import annotations
 
 import logging
-import math
 import random
 from dataclasses import dataclass
-from typing import Dict, Iterable, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Union
 
 try:  # pragma: no cover - optional runtime dependency
     import cv2
@@ -21,14 +20,72 @@ LOGGER = logging.getLogger(__name__)
 @dataclass
 class ObjectObservation:
     label: str
+    color: str
+    shape: str
     distance_cm: float
     angle_deg: float  # positive == turn right, negative == turn left
 
+    def friendly_label(self) -> str:
+        return self.label.replace('_', ' ')
 
-DEFAULT_COLOR_MAP: Dict[str, Dict[str, Tuple[int, int]]] = {
-    'red_cube': {'h': (0, 10), 's': (120, 255), 'v': (80, 255)},
-    'green_cube': {'h': (40, 85), 's': (120, 255), 'v': (70, 255)},
-    'blue_cube': {'h': (100, 135), 's': (120, 255), 'v': (70, 255)},
+    def direction_hint(self) -> str:
+        if self.angle_deg < -12:
+            return 'to your left'
+        if self.angle_deg > 12:
+            return 'to your right'
+        return 'straight ahead'
+
+    def description(self) -> str:
+        color = self.color.replace('_', ' ')
+        shape = self.shape.replace('_', ' ')
+        return (
+            f"{color} {shape} ({self.friendly_label()}) about {self.distance_cm:.0f} cm away "
+            f"{self.direction_hint()}"
+        )
+
+    def as_dict(self) -> Dict[str, object]:
+        return {
+            'label': self.label,
+            'color': self.color,
+            'shape': self.shape,
+            'distance_cm': round(self.distance_cm, 2),
+            'angle_deg': round(self.angle_deg, 2),
+            'direction': self.direction_hint(),
+        }
+
+
+ColorSpec = Dict[str, Union[Tuple[int, int], str]]
+
+
+DEFAULT_COLOR_MAP: Dict[str, ColorSpec] = {
+    'red_cube': {
+        'h': (0, 10),
+        's': (120, 255),
+        'v': (80, 255),
+        'color': 'red',
+        'shape': 'cube',
+    },
+    'green_cube': {
+        'h': (40, 85),
+        's': (120, 255),
+        'v': (70, 255),
+        'color': 'green',
+        'shape': 'cube',
+    },
+    'blue_cube': {
+        'h': (100, 135),
+        's': (120, 255),
+        'v': (70, 255),
+        'color': 'blue',
+        'shape': 'cube',
+    },
+    'yellow_sign': {
+        'h': (20, 35),
+        's': (120, 255),
+        'v': (120, 255),
+        'color': 'yellow',
+        'shape': 'triangle',
+    },
 }
 
 
@@ -40,7 +97,7 @@ class ObjectRecognizer:
         *,
         simulate: bool = False,
         camera_index: int = 0,
-        color_map: Optional[Dict[str, Dict[str, Tuple[int, int]]]] = None,
+        color_map: Optional[Dict[str, ColorSpec]] = None,
     ) -> None:
         self.simulate = simulate or cv2 is None or np is None
         self.camera_index = camera_index
@@ -95,6 +152,8 @@ class ObjectRecognizer:
         return [
             ObjectObservation(
                 label=label,
+                color=self._colour_name(label),
+                shape=self._shape_name(label),
                 distance_cm=random.uniform(10.0, 60.0),
                 angle_deg=random.uniform(-45.0, 45.0),
             )
@@ -127,5 +186,55 @@ class ObjectRecognizer:
             angle = (center_x - (width / 2)) / (width / 2) * 45.0
             relative_size = (w * h) / float(width * height)
             distance = max(10.0, 100.0 - relative_size * 400.0)
-            observations.append(ObjectObservation(label=label, distance_cm=distance, angle_deg=angle))
+            shape = self._infer_shape(contour, w, h, self._shape_name(label))
+            observations.append(
+                ObjectObservation(
+                    label=label,
+                    color=self._colour_name(label),
+                    shape=shape,
+                    distance_cm=distance,
+                    angle_deg=angle,
+                )
+            )
         return observations
+
+    def describe_observations(self) -> List[str]:
+        return [obs.description() for obs in self.observations()]
+
+    def _colour_name(self, label: str) -> str:
+        meta = self.color_map.get(label, {})
+        if isinstance(meta, dict):
+            colour = meta.get('color')  # type: ignore[arg-type]
+            if colour:
+                return str(colour)
+        parts = label.split('_')
+        return parts[0] if parts else label
+
+    def _shape_name(self, label: str) -> str:
+        meta = self.color_map.get(label, {})
+        if isinstance(meta, dict):
+            shape = meta.get('shape')  # type: ignore[arg-type]
+            if shape:
+                return str(shape)
+        parts = label.split('_')
+        return parts[-1] if len(parts) > 1 else 'object'
+
+    @staticmethod
+    def _infer_shape(contour, width: float, height: float, default_shape: str) -> str:
+        if cv2 is None:
+            return default_shape
+        peri = cv2.arcLength(contour, True)
+        approx = cv2.approxPolyDP(contour, 0.04 * peri, True)
+        sides = len(approx)
+        if sides == 3:
+            return 'triangle'
+        if sides == 4:
+            if height == 0:
+                return 'rectangle'
+            ratio = width / float(height)
+            return 'square' if 0.9 <= ratio <= 1.1 else 'rectangle'
+        if sides == 5:
+            return 'pentagon'
+        if sides >= 6:
+            return 'circle'
+        return default_shape
