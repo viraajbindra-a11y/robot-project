@@ -58,6 +58,7 @@ def run_master(
     camera_index: int,
     vision_endpoint: Optional[str],
     vision_key: Optional[str],
+    color_config_path: Optional[str],
 ) -> None:
     logging.basicConfig(level=logging.INFO)
 
@@ -89,9 +90,17 @@ def run_master(
             LOGGER.warning("Remote vision unavailable (%s); falling back to local/simulated perception", exc)
             remote_client = None
 
+    color_override = None
+    if color_config_path:
+        try:
+            color_override = ObjectRecognizer.load_color_map(color_config_path)
+        except Exception as exc:
+            LOGGER.warning("Failed to load colour map %s: %s", color_config_path, exc)
+
     recognizer = ObjectRecognizer(
         simulate=simulate,
         camera_index=camera_index,
+        color_map=color_override,
         remote_client=remote_client,
     )
 
@@ -298,6 +307,7 @@ def main() -> None:
     parser.add_argument('--camera-index', type=int, default=0, help='Camera index for object perception')
     parser.add_argument('--vision-endpoint', help='URL of the remote vision API')
     parser.add_argument('--vision-key', help='API key/token for the remote vision API')
+    parser.add_argument('--vision-colors', help='Path to JSON colour profile for perception')
     args = parser.parse_args()
 
     run_master(
@@ -320,6 +330,7 @@ def main() -> None:
         camera_index=args.camera_index,
         vision_endpoint=args.vision_endpoint,
         vision_key=args.vision_key,
+        color_config_path=args.vision_colors,
     )
 
 

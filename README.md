@@ -168,6 +168,7 @@ python3 src/obstacle_avoid.py --echo 24 --trigger 25
 - Module: `src/object_perception.py`
 - Recognises simple coloured shapes (cubes, cones/signs) via OpenCV when available, with a simulation fallback.
 - Call `ObjectRecognizer.describe_observations()` to get quick natural-language descriptions (colour, shape, distance, direction).
+- Supply a custom colour-profile JSON via `--vision-colors path/to/colors.json`. Remote APIs (see `src/remote_vision.py`) feed into the same narration pipeline.
 
 ## Power & Safety
 - Battery monitor utilities: `src/battery_check.py`

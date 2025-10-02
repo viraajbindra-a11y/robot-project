@@ -1,10 +1,26 @@
-"""Object perception helpers for WALL·E-style manipulation."""
+"""Object perception helpers for WALL·E-style manipulation.
+
+The recogniser supports three tiers of perception:
+
+1.  Local colour/shape heuristics using OpenCV when available (multi-range HSV
+    masks, contour analysis and shape inference with noise suppression).
+2.  Remote inference via :class:`~src.remote_vision.RemoteVisionClient` when a
+    cloud endpoint is configured.
+3.  Deterministic simulation for development and testing.
+
+Colour profiles can be extended at runtime or loaded from JSON configuration
+files. Each profile can include multiple HSV ranges (covering wrap-around
+colours such as red), human-friendly aliases and canonical colour/shape names
+used for narration and control.
+"""
 
 from __future__ import annotations
 
+import json
 import logging
 import random
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple, Union
 
 try:  # pragma: no cover - optional runtime dependency
@@ -15,6 +31,9 @@ except Exception:  # pragma: no cover - keep simulation working without OpenCV
     np = None  # type: ignore
 
 LOGGER = logging.getLogger(__name__)
+
+HSVRangeMapping = Dict[str, Tuple[int, int]]
+ColorSpec = Dict[str, Union[Tuple[int, int], str, Iterable[str], List[HSVRangeMapping], HSVRangeMapping]]
 
 
 @dataclass
@@ -54,16 +73,15 @@ class ObjectObservation:
         }
 
 
-ColorSpec = Dict[str, Union[Tuple[int, int], str, Iterable[str]]]
-
-
 DEFAULT_COLOR_MAP: Dict[str, ColorSpec] = {
     'red_cube': {
-        'h': (0, 10),
-        's': (120, 255),
-        'v': (80, 255),
+        'ranges': [
+            {'h': (0, 10), 's': (150, 255), 'v': (90, 255)},
+            {'h': (170, 179), 's': (150, 255), 'v': (90, 255)},
+        ],
         'color': 'red',
         'shape': 'cube',
+        'aliases': ('red block', 'red box'),
     },
     'green_cube': {
         'h': (40, 85),
@@ -71,6 +89,7 @@ DEFAULT_COLOR_MAP: Dict[str, ColorSpec] = {
         'v': (70, 255),
         'color': 'green',
         'shape': 'cube',
+        'aliases': ('green block',),
     },
     'blue_cube': {
         'h': (100, 135),
@@ -79,6 +98,14 @@ DEFAULT_COLOR_MAP: Dict[str, ColorSpec] = {
         'color': 'blue',
         'shape': 'cube',
         'aliases': ('blue block', 'blue box'),
+    },
+    'purple_ball': {
+        'h': (130, 155),
+        's': (150, 255),
+        'v': (90, 255),
+        'color': 'purple',
+        'shape': 'ball',
+        'aliases': ('purple sphere',),
     },
     'yellow_sign': {
         'h': (20, 35),
@@ -94,7 +121,7 @@ DEFAULT_COLOR_MAP: Dict[str, ColorSpec] = {
         'v': (120, 255),
         'color': 'orange',
         'shape': 'mug',
-        'aliases': ('orange cup', 'mug', 'coffee mug'),
+        'aliases': ('orange cup', 'coffee mug'),
     },
     'black_box': {
         'h': (0, 180),
@@ -104,11 +131,36 @@ DEFAULT_COLOR_MAP: Dict[str, ColorSpec] = {
         'shape': 'box',
         'aliases': ('black block', 'black cube'),
     },
+    'white_plate': {
+        'h': (0, 180),
+        's': (0, 30),
+        'v': (180, 255),
+        'color': 'white',
+        'shape': 'plate',
+        'aliases': ('white disc',),
+    },
+    'silver_can': {
+        'ranges': [
+            {'h': (0, 10), 's': (0, 70), 'v': (170, 255)},
+            {'h': (170, 179), 's': (0, 70), 'v': (170, 255)},
+        ],
+        'color': 'silver',
+        'shape': 'cylinder',
+        'aliases': ('soda can', 'aluminium can'),
+    },
+    'green_cone': {
+        'h': (45, 80),
+        's': (170, 255),
+        'v': (120, 255),
+        'color': 'green',
+        'shape': 'cone',
+        'aliases': ('traffic cone',),
+    },
 }
 
 
 class ObjectRecognizer:
-    """Rudimentary object recogniser with simulation fallback."""
+    """Rudimentary object recogniser with simulation fallback and remote support."""
 
     def __init__(
         self,
@@ -116,10 +168,12 @@ class ObjectRecognizer:
         simulate: bool = False,
         camera_index: int = 0,
         color_map: Optional[Dict[str, ColorSpec]] = None,
+        remote_client: Optional[object] = None,
     ) -> None:
         self.simulate = simulate or cv2 is None or np is None
         self.camera_index = camera_index
-        self.color_map = color_map or DEFAULT_COLOR_MAP
+        self.color_map = self._normalise_color_map(color_map or DEFAULT_COLOR_MAP)
+        self.remote_client = remote_client
         self._cap = None
         if not self.simulate and cv2 is not None:
             self._cap = cv2.VideoCapture(camera_index)
@@ -127,15 +181,20 @@ class ObjectRecognizer:
                 LOGGER.warning("Failed to open camera %s, falling back to simulation", camera_index)
                 self.simulate = True
 
+    # ------------------------------------------------------------------ API
+
     def observations(self) -> List[ObjectObservation]:
+        remote_observations = self._detect_remote()
+        if remote_observations:
+            return remote_observations
         if self.simulate:
             return self._simulate_observations()
         return self._detect_colours()
 
     def locate(self, label: str) -> Optional[ObjectObservation]:
-        label = self.resolve_label(label) or label.lower().replace(' ', '_')
+        resolved = self.resolve_label(label) or label.lower().replace(' ', '_')
         for obs in self.observations():
-            if obs.label == label:
+            if obs.label == resolved:
                 return obs
         return None
 
@@ -144,15 +203,13 @@ class ObjectRecognizer:
         candidate_key = candidate.replace(' ', '_')
         if candidate_key in self.color_map:
             return candidate_key
-        for label in self.color_map:
-            pretty_label = label.replace('_', ' ')
-            if candidate in pretty_label:
+        for label, profile in self.color_map.items():
+            pretty = label.replace('_', ' ')
+            if candidate in pretty:
                 return label
-            colour = self._colour_name(label)
-            shape = self._shape_name(label)
-            if colour in candidate and shape in candidate:
+            if profile['color'] in candidate and profile['shape'] in candidate:
                 return label
-            for alias in self._aliases(label):
+            for alias in profile['aliases']:
                 alias_norm = alias.lower().replace('-', ' ')
                 if candidate == alias_norm or candidate in alias_norm:
                     return label
@@ -179,6 +236,9 @@ class ObjectRecognizer:
         lead = ', '.join(descriptions[:-1])
         return f"I see {lead}, and {descriptions[-1]}."
 
+    def describe_observations(self) -> List[str]:
+        return [obs.description() for obs in self.observations()]
+
     def plan_grab(self, label: str) -> List[Dict[str, str]]:
         obs = self.locate(label)
         if not obs:
@@ -199,7 +259,7 @@ class ObjectRecognizer:
         if self._cap is not None:
             self._cap.release()
 
-    # ------------------------------------------------------------------
+    # ---------------------------------------------------------------- simulation
 
     def _simulate_observations(self) -> List[ObjectObservation]:
         labels = list(self.color_map.keys())
@@ -210,13 +270,48 @@ class ObjectRecognizer:
         return [
             ObjectObservation(
                 label=label,
-                color=self._colour_name(label),
-                shape=self._shape_name(label),
+                color=profile['color'],
+                shape=profile['shape'],
                 distance_cm=random.uniform(10.0, 60.0),
                 angle_deg=random.uniform(-45.0, 45.0),
             )
-            for label in chosen
+            for label, profile in ((lab, self.color_map[lab]) for lab in chosen)
         ]
+
+    # ---------------------------------------------------------------- detection
+
+    def _detect_remote(self) -> List[ObjectObservation]:
+        if not self.remote_client:
+            return []
+        try:
+            payload = self.remote_client.detect()
+        except Exception as exc:  # pragma: no cover - network failure
+            LOGGER.warning("Remote vision failed: %s", exc)
+            return []
+        observations: List[ObjectObservation] = []
+        for item in payload or []:
+            if not isinstance(item, dict):
+                continue
+            label = item.get('label')
+            if not isinstance(label, str):
+                continue
+            resolved = self.resolve_label(label) or label.lower().replace(' ', '_')
+            profile = self.color_map.get(resolved, {
+                'color': resolved.split('_')[0] if '_' in resolved else resolved,
+                'shape': resolved.split('_')[-1] if '_' in resolved else 'object',
+            })
+            distance = float(item.get('distance_cm', item.get('distance', 0.0)))
+            angle = float(item.get('angle_deg', item.get('angle', 0.0)))
+            observations.append(
+                ObjectObservation(
+                    label=resolved,
+                    color=profile.get('color', resolved),
+                    shape=profile.get('shape', 'object'),
+                    distance_cm=max(distance, 0.0),
+                    angle_deg=angle,
+                )
+            )
+        return observations
 
     def _detect_colours(self) -> List[ObjectObservation]:  # pragma: no cover
         assert cv2 is not None and np is not None
@@ -228,27 +323,37 @@ class ObjectRecognizer:
             return []
         hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
         height, width = hsv.shape[:2]
+        kernel = np.ones((5, 5), np.uint8)
         observations: List[ObjectObservation] = []
-        for label, ranges in self.color_map.items():
-            lower = np.array([ranges['h'][0], ranges['s'][0], ranges['v'][0]])
-            upper = np.array([ranges['h'][1], ranges['s'][1], ranges['v'][1]])
-            mask = cv2.inRange(hsv, lower, upper)
+        for label, profile in self.color_map.items():
+            masks: List[np.ndarray] = []
+            for hsv_range in profile['ranges']:
+                lower = np.array([hsv_range['h'][0], hsv_range['s'][0], hsv_range['v'][0]])
+                upper = np.array([hsv_range['h'][1], hsv_range['s'][1], hsv_range['v'][1]])
+                masks.append(cv2.inRange(hsv, lower, upper))
+            if not masks:
+                continue
+            mask = masks[0]
+            for extra in masks[1:]:
+                mask = cv2.bitwise_or(mask, extra)
+            mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+            mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
             contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
             if not contours:
                 continue
             contour = max(contours, key=cv2.contourArea)
-            if cv2.contourArea(contour) < 50:
+            area = cv2.contourArea(contour)
+            if area < 80:
                 continue
             x, y, w, h = cv2.boundingRect(contour)
             center_x = x + w / 2
-            angle = (center_x - (width / 2)) / (width / 2) * 45.0
-            relative_size = (w * h) / float(width * height)
-            distance = max(10.0, 100.0 - relative_size * 400.0)
-            shape = self._infer_shape(contour, w, h, self._shape_name(label))
+            angle = (center_x - (width / 2)) / max(width / 2, 1) * 45.0
+            distance = self._estimate_distance(area, width * height)
+            shape = self._infer_shape(contour, w, h, profile['shape'])
             observations.append(
                 ObjectObservation(
                     label=label,
-                    color=self._colour_name(label),
+                    color=profile['color'],
                     shape=shape,
                     distance_cm=distance,
                     angle_deg=angle,
@@ -256,37 +361,10 @@ class ObjectRecognizer:
             )
         return observations
 
-    def describe_observations(self) -> List[str]:
-        return [obs.description() for obs in self.observations()]
-
-    def _colour_name(self, label: str) -> str:
-        meta = self.color_map.get(label, {})
-        if isinstance(meta, dict):
-            colour = meta.get('color')  # type: ignore[arg-type]
-            if colour:
-                return str(colour)
-        parts = label.split('_')
-        return parts[0] if parts else label
-
-    def _shape_name(self, label: str) -> str:
-        meta = self.color_map.get(label, {})
-        if isinstance(meta, dict):
-            shape = meta.get('shape')  # type: ignore[arg-type]
-            if shape:
-                return str(shape)
-        parts = label.split('_')
-        return parts[-1] if len(parts) > 1 else 'object'
+    # ---------------------------------------------------------------- helpers
 
     def _aliases(self, label: str) -> Iterable[str]:
-        meta = self.color_map.get(label, {})
-        if not isinstance(meta, dict):
-            return []
-        aliases = meta.get('aliases')
-        if isinstance(aliases, str):
-            return [aliases]
-        if isinstance(aliases, Iterable):
-            return [str(item) for item in aliases]
-        return []
+        return self.color_map.get(label, {}).get('aliases', [])
 
     @staticmethod
     def _infer_shape(contour, width: float, height: float, default_shape: str) -> str:
@@ -307,3 +385,76 @@ class ObjectRecognizer:
         if sides >= 6:
             return 'circle'
         return default_shape
+
+    @staticmethod
+    def _estimate_distance(contour_area: float, frame_area: float) -> float:
+        if frame_area <= 0 or contour_area <= 0:
+            return 60.0
+        coverage = contour_area / frame_area
+        distance = 200.0 * (coverage ** -0.5)
+        return max(8.0, min(distance, 120.0))
+
+    # ---------------------------------------------------------------- config
+
+    @staticmethod
+    def load_color_map(path: Union[str, Path]) -> Dict[str, ColorSpec]:
+        """Load a colour profile JSON file."""
+
+        with Path(path).expanduser().open('r', encoding='utf-8') as handle:
+            data = json.load(handle)
+        if not isinstance(data, dict):
+            raise ValueError('Colour map JSON must map labels to profiles')
+        return ObjectRecognizer._normalise_color_map(data)
+
+    @staticmethod
+    def _normalise_color_map(raw_map: Dict[str, ColorSpec]) -> Dict[str, Dict[str, object]]:
+        normalised: Dict[str, Dict[str, object]] = {}
+        for label, spec in raw_map.items():
+            if not isinstance(spec, dict):
+                raise ValueError(f'Colour profile for {label} must be a dict')
+            colour = str(spec.get('color', label.split('_')[0] if '_' in label else label))
+            shape = str(spec.get('shape', label.split('_')[-1] if '_' in label else 'object'))
+            aliases = spec.get('aliases', [])
+            if isinstance(aliases, str):
+                aliases = [aliases]
+            elif isinstance(aliases, Iterable):
+                aliases = [str(a) for a in aliases]
+            else:
+                aliases = []
+
+            ranges: List[HSVRangeMapping] = []
+            if 'ranges' in spec:
+                raw_ranges = spec['ranges']
+                if isinstance(raw_ranges, dict):
+                    raw_ranges = [raw_ranges]
+                for entry in raw_ranges:
+                    ranges.append(ObjectRecognizer._validate_hsv(entry, label))
+            elif all(key in spec for key in ('h', 's', 'v')):
+                ranges.append(ObjectRecognizer._validate_hsv({'h': spec['h'], 's': spec['s'], 'v': spec['v']}, label))
+            else:
+                raise ValueError(f'Colour profile for {label} lacks HSV range information')
+
+            normalised[label] = {
+                'color': colour,
+                'shape': shape,
+                'aliases': tuple(aliases),
+                'ranges': ranges,
+            }
+        return normalised
+
+    @staticmethod
+    def _validate_hsv(entry: ColorSpec, label: str) -> HSVRangeMapping:
+        try:
+            h = tuple(entry['h'])  # type: ignore[index]
+            s = tuple(entry['s'])  # type: ignore[index]
+            v = tuple(entry['v'])  # type: ignore[index]
+        except Exception as exc:  # pragma: no cover - config error
+            raise ValueError(f'Invalid HSV range for {label}: {entry}') from exc
+        if any(len(x) != 2 for x in (h, s, v)):
+            raise ValueError(f'HSV tuples must have two values for {label}')
+        return {'h': (int(h[0]), int(h[1])), 's': (int(s[0]), int(s[1])), 'v': (int(v[0]), int(v[1]))}
+
+    def update_color_map(self, extra: Dict[str, ColorSpec]) -> None:
+        """Merge additional colour profiles into the recogniser."""
+
+        self.color_map.update(self._normalise_color_map(extra))
