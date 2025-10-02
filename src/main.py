@@ -199,6 +199,42 @@ def run_master(
             movement.stop()
         current_motion['value'] = action
 
+    def apply_tuning(action_value: str) -> None:
+        if action_value.startswith('speed_set:'):
+            try:
+                movement.set_speed_scale(float(action_value.split(':', 1)[1]))
+            except ValueError:
+                LOGGER.debug('Invalid speed_set value: %s', action_value)
+        elif action_value.startswith('speed_adj:'):
+            try:
+                movement.adjust_speed_scale(float(action_value.split(':', 1)[1]))
+            except ValueError:
+                LOGGER.debug('Invalid speed_adj value: %s', action_value)
+        elif action_value == 'trim_reset':
+            movement.reset_trim()
+        elif action_value.startswith('trim_set:'):
+            try:
+                _, side, amount = action_value.split(':', 2)
+                value = float(amount)
+            except ValueError:
+                LOGGER.debug('Invalid trim_set value: %s', action_value)
+                return
+            if side == 'left':
+                movement.set_trim(value, movement.trim[1])
+            elif side == 'right':
+                movement.set_trim(movement.trim[0], value)
+        elif action_value.startswith('trim_adj:'):
+            try:
+                _, side, amount = action_value.split(':', 2)
+                value = float(amount)
+            except ValueError:
+                LOGGER.debug('Invalid trim_adj value: %s', action_value)
+                return
+            if side == 'left':
+                movement.adjust_trim(left_delta=value)
+            elif side == 'right':
+                movement.adjust_trim(right_delta=value)
+
     def execute(actions: Iterable[Dict[str, str]]) -> None:
         for action in actions:
             typ = action.get('type')
@@ -238,11 +274,13 @@ def run_master(
                     elif mode == 'set_left':
                         current_left, current_right = gesture_controller.positions
                         gesture_controller.set_positions(left_val, current_right)
-                    elif mode == 'set_right':
-                        current_left, current_right = gesture_controller.positions
-                        gesture_controller.set_positions(current_left, right_val)
-                    elif mode == 'adjust':
-                        gesture_controller.adjust(left_val, right_val)
+                   elif mode == 'set_right':
+                       current_left, current_right = gesture_controller.positions
+                       gesture_controller.set_positions(current_left, right_val)
+                   elif mode == 'adjust':
+                       gesture_controller.adjust(left_val, right_val)
+            elif typ == 'tuning' and value:
+                apply_tuning(value)
             elif typ == 'task' and value:
                 if value.startswith('grab:'):
                     label = value.split(':', 1)[1]

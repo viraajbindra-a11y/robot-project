@@ -246,6 +246,8 @@ class Chatbot:
 
         arm_actions = self._infer_arm_actions(text)
         actions.extend(arm_actions)
+        tuning_actions = self._infer_tuning_actions(text)
+        actions.extend(tuning_actions)
         return actions
 
     def _fallback_speech(self, actions: List[Dict[str, str]]) -> str:
@@ -304,6 +306,41 @@ class Chatbot:
             build_action('adjust', 0.2, 0.2)
         if 'arms down' in text or 'lower both arms' in text:
             build_action('adjust', -0.2, -0.2)
+        return actions
+
+    def _infer_tuning_actions(self, text: str) -> List[Dict[str, str]]:
+        actions: List[Dict[str, str]] = []
+        if not any(keyword in text for keyword in ('speed', 'trim', 'motor', 'slow', 'fast')):
+            return actions
+
+        numbers = [float(match.group()) for match in re.finditer(r'-?\d+(?:\.\d+)?', text)]
+
+        def add(action: str) -> None:
+            actions.append({'type': 'tuning', 'value': action})
+
+        first_number = numbers[0] if numbers else None
+        if 'set speed' in text and first_number is not None:
+            add(f'speed_set:{max(0.0, min(1.5, first_number)):.3f}')
+        if any(phrase in text for phrase in ('increase speed', 'speed up', 'go faster')):
+            delta = first_number if first_number is not None else 0.1
+            add(f'speed_adj:{max(0.01, abs(delta)):.3f}')
+        if any(phrase in text for phrase in ('decrease speed', 'slow down', 'go slower')):
+            delta = first_number if first_number is not None else 0.1
+            add(f'speed_adj:-{max(0.01, abs(delta)):.3f}')
+
+        if 'set left trim' in text and first_number is not None:
+            add(f'trim_set:left:{first_number:.3f}')
+        if 'set right trim' in text and first_number is not None:
+            add(f'trim_set:right:{first_number:.3f}')
+        if 'reset trim' in text or 'balance motors' in text:
+            add('trim_reset')
+
+        default_delta = first_number if first_number is not None else 0.02
+        if 'trim left' in text or 'nudge left motor' in text:
+            add(f'trim_adj:left:{default_delta:+.3f}')
+        if 'trim right' in text or 'nudge right motor' in text:
+            add(f'trim_adj:right:{default_delta:+.3f}')
+
         return actions
 
     def _build_prompt(self) -> str:

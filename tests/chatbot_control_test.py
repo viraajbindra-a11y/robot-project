@@ -50,6 +50,20 @@ class TestChatbotControl(unittest.TestCase):
         result = self.bot.generate_control_reply('Set left arm to 0.5 and right arm to -0.3')
         self.assertTrue(any(a['type'] == 'arms' and a['value'].startswith('set:0.500:-0.300') for a in result['actions']))
 
+    def test_speed_tuning(self):
+        result = self.bot.generate_control_reply('Set speed to 0.6')
+        self.assertTrue(any(a['type'] == 'tuning' and a['value'] == 'speed_set:0.600' for a in result['actions']))
+        result = self.bot.generate_control_reply('Increase speed by 0.15')
+        self.assertTrue(any(a['type'] == 'tuning' and a['value'] == 'speed_adj:0.150' for a in result['actions']))
+        result = self.bot.generate_control_reply('Slow down a little')
+        self.assertTrue(any(a['type'] == 'tuning' and a['value'].startswith('speed_adj:-') for a in result['actions']))
+
+    def test_trim_tuning(self):
+        result = self.bot.generate_control_reply('Trim left motor by 0.05')
+        self.assertTrue(any(a['type'] == 'tuning' and a['value'] == 'trim_adj:left:+0.050' for a in result['actions']))
+        result = self.bot.generate_control_reply('Reset trim please')
+        self.assertTrue(any(a['type'] == 'tuning' and a['value'] == 'trim_reset' for a in result['actions']))
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -164,6 +164,11 @@ python3 src/obstacle_avoid.py --simulate
 python3 src/obstacle_avoid.py --echo 24 --trigger 25
 ```
 
+## Motor Tuning
+- Runtime speed scaling and per-motor trim live in `src/movement.py`.
+- Voice commands like “set speed to 0.6”, “speed up a bit”, “trim left motor by 0.05”, or “balance the motors” adjust the drivetrain while the master loop is running.
+- You can reset trims by saying “reset trim” or via direct API calls (`Movement.reset_trim()`).
+
 ## Object Perception
 - Module: `src/object_perception.py`
 - Recognises simple coloured shapes (cubes, cones/signs) via OpenCV when available, with a simulation fallback and Google Vision integration.
