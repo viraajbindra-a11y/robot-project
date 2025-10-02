@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import random
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Dict, Iterable, List, Optional, Tuple, Union
 
 try:  # pragma: no cover - optional runtime dependency
     import cv2
@@ -54,7 +54,7 @@ class ObjectObservation:
         }
 
 
-ColorSpec = Dict[str, Union[Tuple[int, int], str]]
+ColorSpec = Dict[str, Union[Tuple[int, int], str, Iterable[str]]]
 
 
 DEFAULT_COLOR_MAP: Dict[str, ColorSpec] = {
@@ -78,6 +78,7 @@ DEFAULT_COLOR_MAP: Dict[str, ColorSpec] = {
         'v': (70, 255),
         'color': 'blue',
         'shape': 'cube',
+        'aliases': ('blue block', 'blue box'),
     },
     'yellow_sign': {
         'h': (20, 35),
@@ -85,6 +86,23 @@ DEFAULT_COLOR_MAP: Dict[str, ColorSpec] = {
         'v': (120, 255),
         'color': 'yellow',
         'shape': 'triangle',
+        'aliases': ('warning sign', 'triangle sign'),
+    },
+    'orange_mug': {
+        'h': (5, 25),
+        's': (140, 255),
+        'v': (120, 255),
+        'color': 'orange',
+        'shape': 'mug',
+        'aliases': ('orange cup', 'mug', 'coffee mug'),
+    },
+    'black_box': {
+        'h': (0, 180),
+        's': (0, 80),
+        'v': (0, 60),
+        'color': 'black',
+        'shape': 'box',
+        'aliases': ('black block', 'black cube'),
     },
 }
 
@@ -115,11 +133,51 @@ class ObjectRecognizer:
         return self._detect_colours()
 
     def locate(self, label: str) -> Optional[ObjectObservation]:
-        label = label.lower().replace(' ', '_')
+        label = self.resolve_label(label) or label.lower().replace(' ', '_')
         for obs in self.observations():
             if obs.label == label:
                 return obs
         return None
+
+    def resolve_label(self, query: str) -> Optional[str]:
+        candidate = query.lower().strip().replace('-', ' ')
+        candidate_key = candidate.replace(' ', '_')
+        if candidate_key in self.color_map:
+            return candidate_key
+        for label in self.color_map:
+            pretty_label = label.replace('_', ' ')
+            if candidate in pretty_label:
+                return label
+            colour = self._colour_name(label)
+            shape = self._shape_name(label)
+            if colour in candidate and shape in candidate:
+                return label
+            for alias in self._aliases(label):
+                alias_norm = alias.lower().replace('-', ' ')
+                if candidate == alias_norm or candidate in alias_norm:
+                    return label
+        return None
+
+    def describe(self, label: Optional[str] = None) -> str:
+        if label:
+            resolved = self.resolve_label(label)
+            if not resolved:
+                return f"I don't have a profile for a {label}."
+            obs = self.locate(resolved)
+            if obs:
+                return f"I see {obs.description()}."
+            friendly = resolved.replace('_', ' ')
+            return f"I don't see a {friendly} right now."
+
+        descriptions = self.describe_observations()
+        if not descriptions:
+            return "I don't see anything important right now."
+        if len(descriptions) == 1:
+            return f"I see {descriptions[0]}."
+        if len(descriptions) == 2:
+            return f"I see {descriptions[0]} and {descriptions[1]}."
+        lead = ', '.join(descriptions[:-1])
+        return f"I see {lead}, and {descriptions[-1]}."
 
     def plan_grab(self, label: str) -> List[Dict[str, str]]:
         obs = self.locate(label)
@@ -218,6 +276,17 @@ class ObjectRecognizer:
                 return str(shape)
         parts = label.split('_')
         return parts[-1] if len(parts) > 1 else 'object'
+
+    def _aliases(self, label: str) -> Iterable[str]:
+        meta = self.color_map.get(label, {})
+        if not isinstance(meta, dict):
+            return []
+        aliases = meta.get('aliases')
+        if isinstance(aliases, str):
+            return [aliases]
+        if isinstance(aliases, Iterable):
+            return [str(item) for item in aliases]
+        return []
 
     @staticmethod
     def _infer_shape(contour, width: float, height: float, default_shape: str) -> str:

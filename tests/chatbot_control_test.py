@@ -33,6 +33,14 @@ class TestChatbotControl(unittest.TestCase):
         result = self.bot.generate_control_reply('Release the cube now')
         self.assertTrue(any(a['type'] == 'gripper' and a['value'] == 'open' for a in result['actions']))
 
+    def test_vision_describe_all(self):
+        result = self.bot.generate_control_reply('What do you see around you?')
+        self.assertTrue(any(a['type'] == 'vision' and a['value'].startswith('describe') for a in result['actions']))
+
+    def test_vision_describe_specific(self):
+        result = self.bot.generate_control_reply('Do you see the orange mug?')
+        self.assertTrue(any(a['type'] == 'vision' and a['value'] == 'describe:orange_mug' for a in result['actions']))
+
 
 if __name__ == '__main__':
     unittest.main()

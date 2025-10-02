@@ -53,10 +53,11 @@ CONTROL_SYSTEM_PROMPT = (
     "You are the control brain for a playful WALL-E style robot."
     " Respond ONLY with JSON using this schema:\n"
     "{\n  \"speech\": \"text the robot should speak\",\n"
-    "  \"actions\": [\n    {\"type\": \"movement|autonomy|gesture|gripper|other\", \"value\": \"...\"}\n  ]\n}"
+    "  \"actions\": [\n    {\"type\": \"movement|autonomy|gesture|gripper|vision|other\", \"value\": \"...\"}\n  ]\n}"
     " Use movement values forward, backward, left, right, stop."
     " Use autonomy values start or stop. For gestures use wave, point, nod, salute, rest."
-    " For gripper use open, close, or toggle. Keep speech short and in character."
+    " For gripper use open, close, or toggle."
+    " Vision values should be describe or describe:<object label>. Keep speech short and in character."
 )
 
 
@@ -197,7 +198,19 @@ class Chatbot:
             actions.append({'type': 'gesture', 'value': 'nod'})
         if any(word in text for word in ('rest arms', 'hands down', 'relax arms')):
             actions.append({'type': 'gesture', 'value': 'rest'})
-        object_labels = {'red cube': 'red_cube', 'green cube': 'green_cube', 'blue cube': 'blue_cube', 'cube': 'red_cube', 'block': 'red_cube'}
+        object_labels = {
+            'red cube': 'red_cube',
+            'green cube': 'green_cube',
+            'blue cube': 'blue_cube',
+            'cube': 'red_cube',
+            'block': 'red_cube',
+            'orange mug': 'orange_mug',
+            'orange cup': 'orange_mug',
+            'mug': 'orange_mug',
+            'coffee mug': 'orange_mug',
+            'black box': 'black_box',
+            'black cube': 'black_box',
+        }
         grab_keywords = ('grab', 'grip', 'clamp', 'hold tight', 'pick up', 'pick it up')
         if any(word in text for word in grab_keywords):
             selected = None
@@ -208,6 +221,23 @@ class Chatbot:
             if selected:
                 actions.append({'type': 'task', 'value': f'grab:{selected}'})
             actions.append({'type': 'gripper', 'value': 'close'})
+        if any(word in text for word in ('what do you see', 'what can you see', 'describe what you see', 'look around', 'spot anything', 'describe the room', 'anything you see', 'do you see')):
+            detail = None
+            for phrase, label in object_labels.items():
+                if phrase in text:
+                    detail = label
+                    break
+            if detail:
+                actions.append({'type': 'vision', 'value': f'describe:{detail}'})
+            else:
+                actions.append({'type': 'vision', 'value': 'describe'})
+
+        if any(word in text for word in ('show me the', 'where is the', 'do you see the', 'find the')):
+            for phrase, label in object_labels.items():
+                if phrase in text:
+                    actions.append({'type': 'vision', 'value': f'describe:{label}'})
+                    break
+
         if any(word in text for word in ('release', 'drop', 'let go', 'open hand')):
             actions.append({'type': 'gripper', 'value': 'open'})
         if 'toggle gripper' in text or 'toggle claw' in text:
@@ -216,6 +246,12 @@ class Chatbot:
 
     def _fallback_speech(self, actions: List[Dict[str, str]]) -> str:
         summary = ', '.join(f"{a['type']} {a['value']}" for a in actions)
+        if any(a['type'] == 'vision' for a in actions):
+            if self.attitude == 'grumpy':
+                return 'Fine. I will look.'
+            if self.attitude == 'cheerful':
+                return 'Scanning the scene!'
+            return 'Let me take a look.'
         if self.attitude == 'grumpy':
             return f"Fine. {summary}."
         if self.attitude == 'cheerful':

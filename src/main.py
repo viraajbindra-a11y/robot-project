@@ -203,6 +203,13 @@ def run_master(
                     label = value.split(':', 1)[1]
                     plan = recognizer.plan_grab(label)
                     execute(plan)
+            elif typ == 'vision':
+                label = None
+                if value and ':' in value:
+                    _, detail = value.split(':', 1)
+                    label = detail
+                speech = recognizer.describe(label)
+                voice.speak(adapter.apply(speech))
             elif typ == 'speech' and value:
                 voice.speak(adapter.apply(value))
 

@@ -136,6 +136,7 @@ Safety:
   python3 src/chatbot.py --simulate --control --persona-file src/personas/wallee.txt
   ```
   Useful for validating how conversations map to movement/autonomy/gesture/gripper commands.
+- Ask the master loop things like “What do you see?” or “Do you see the orange mug?” to hear spoken object descriptions sourced from `ObjectRecognizer`.
 
 Examples:
 ```bash
