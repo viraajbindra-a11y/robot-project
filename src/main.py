@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import sys
 import threading
 import time
@@ -397,6 +398,14 @@ def main() -> None:
     parser.add_argument('--vision-colors', help='Path to JSON colour profile for perception')
     args = parser.parse_args()
 
+    google_key = args.google_vision_key or os.environ.get('GOOGLE_VISION_KEY')
+    google_endpoint = args.google_vision_endpoint or os.environ.get('GOOGLE_VISION_ENDPOINT')
+    google_features = args.google_vision_features
+    if google_features is None:
+        features_env = os.environ.get('GOOGLE_VISION_FEATURES')
+        if features_env:
+            google_features = [item.strip() for item in features_env.split(',') if item.strip()]
+
     run_master(
         simulate=args.simulate,
         persona_path=args.persona,
@@ -417,9 +426,9 @@ def main() -> None:
         camera_index=args.camera_index,
         vision_endpoint=args.vision_endpoint,
         vision_key=args.vision_key,
-        google_vision_key=args.google_vision_key,
-        google_vision_endpoint=args.google_vision_endpoint,
-        google_vision_features=args.google_vision_features,
+        google_vision_key=google_key,
+        google_vision_endpoint=google_endpoint,
+        google_vision_features=google_features,
         color_config_path=args.vision_colors,
     )
 

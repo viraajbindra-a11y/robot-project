@@ -174,7 +174,7 @@ python3 src/obstacle_avoid.py --echo 24 --trigger 25
 - Recognises simple coloured shapes (cubes, cones/signs) via OpenCV when available, with a simulation fallback and Google Vision integration.
 - Call `ObjectRecognizer.describe_observations()` to get quick natural-language descriptions (colour, shape, distance, direction).
 - Supply a custom colour-profile JSON via `--vision-colors path/to/colors.json`. Remote APIs (see `src/remote_vision.py`) feed into the same narration pipeline.
-- Google Cloud Vision support: add `--google-vision-key $KEY` (and optionally `--google-vision-features OBJECT_LOCALIZATION`) to delegate perception to the cloud while keeping narration local.
+- Google Cloud Vision support: add `--google-vision-key $KEY` (and optionally `--google-vision-features OBJECT_LOCALIZATION`) to delegate perception to the cloud while keeping narration local. Environment variables `GOOGLE_VISION_KEY`, `GOOGLE_VISION_ENDPOINT`, and `GOOGLE_VISION_FEATURES` are picked up automatically if set.
 
 ## Power & Safety
 - Battery monitor utilities: `src/battery_check.py`
