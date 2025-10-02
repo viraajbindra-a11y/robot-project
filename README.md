@@ -175,6 +175,7 @@ python3 src/obstacle_avoid.py --echo 24 --trigger 25
 - Call `ObjectRecognizer.describe_observations()` to get quick natural-language descriptions (colour, shape, distance, direction).
 - Supply a custom colour-profile JSON via `--vision-colors path/to/colors.json`. Remote APIs (see `src/remote_vision.py`) feed into the same narration pipeline.
 - Google Cloud Vision support: add `--google-vision-key $KEY` (and optionally `--google-vision-features OBJECT_LOCALIZATION`) to delegate perception to the cloud while keeping narration local. Environment variables `GOOGLE_VISION_KEY`, `GOOGLE_VISION_ENDPOINT`, and `GOOGLE_VISION_FEATURES` are picked up automatically if set.
+- Local YOLO option (no API key): install `opencv-python ultralytics` and run with `--yolo-model yolov8n.pt` (or set `YOLO_MODEL`). Optional `--yolo-conf` and `--yolo-classes` let you tweak thresholds and class filters.
 
 ## Power & Safety
 - Battery monitor utilities: `src/battery_check.py`
@@ -203,7 +204,7 @@ python3 src/main.py --battery-driver ads1115 --battery-ads-channel 0 --battery-d
 - Install base deps: `pip install -r requirements.txt`
 - On Raspberry Pi for motors/sensors: `pip install gpiozero` (or `sudo apt install python3-gpiozero`)
 - Optional for voice: `pyttsx3`, `vosk`, `sounddevice`, `pyaudio`. For OpenAI: set `OPENAI_API_KEY`.
-- Optional for vision: `opencv-python` (or `sudo apt install python3-opencv`).
+- Optional for vision: `opencv-python` (or `sudo apt install python3-opencv`). For local YOLO add `ultralytics`.
 
 ## Sync to Raspberry Pi
 ```bash

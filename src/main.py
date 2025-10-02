@@ -23,6 +23,7 @@ from src.movement import Movement
 from src.object_perception import ObjectRecognizer
 from src.remote_vision import RemoteVisionClient
 from src.cloud_vision import GoogleVisionClient, DEFAULT_ENDPOINT as GOOGLE_DEFAULT_ENDPOINT
+from src.local_vision import LocalYoloClient
 from src.personality_adapter import PersonalityAdapter, DEFAULT_PERSONA, load_persona_from_file
 from src.safe_shutdown import SafeShutdown
 from src.sensors import DistanceSensorWrapper
@@ -63,6 +64,9 @@ def run_master(
     google_vision_key: Optional[str],
     google_vision_endpoint: Optional[str],
     google_vision_features: Optional[Sequence[str]],
+    yolo_model: Optional[str],
+    yolo_conf: Optional[float],
+    yolo_classes: Optional[Sequence[int]],
     color_config_path: Optional[str],
 ) -> None:
     logging.basicConfig(level=logging.INFO)
@@ -108,6 +112,19 @@ def run_master(
             LOGGER.warning("Google Vision unavailable (%s); continuing without it", exc)
             google_client = None
 
+    yolo_client = None
+    if yolo_model and not simulate:
+        try:
+            yolo_client = LocalYoloClient(
+                model_path=yolo_model,
+                camera_index=camera_index,
+                conf=yolo_conf if yolo_conf is not None else 0.25,
+                classes=[int(cls) for cls in yolo_classes] if yolo_classes else None,
+            )
+        except Exception as exc:
+            LOGGER.warning("Local YOLO unavailable (%s); continuing without it", exc)
+            yolo_client = None
+
     color_override = None
     if color_config_path:
         try:
@@ -119,7 +136,7 @@ def run_master(
         simulate=simulate,
         camera_index=camera_index,
         color_map=color_override,
-        remote_client=google_client or remote_client,
+        remote_client=yolo_client or google_client or remote_client,
     )
 
     front_sensor: Optional[DistanceSensorWrapper] = None
@@ -367,6 +384,11 @@ def run_master(
                 google_client.close()
             except Exception:
                 pass
+        if yolo_client:
+            try:
+                yolo_client.close()
+            except Exception:
+                pass
         if wall_guard:
             wall_guard.close()
 
@@ -395,6 +417,9 @@ def main() -> None:
     parser.add_argument('--google-vision-key', help='Google Vision API key (OBJECT_LOCALIZATION)')
     parser.add_argument('--google-vision-endpoint', help='Custom Google Vision endpoint override')
     parser.add_argument('--google-vision-features', nargs='*', help='Google Vision feature list (default OBJECT_LOCALIZATION)')
+    parser.add_argument('--yolo-model', help='Path or name for Ultralytics YOLO model (e.g. yolov8n.pt)')
+    parser.add_argument('--yolo-conf', type=float, help='Confidence threshold for YOLO detections')
+    parser.add_argument('--yolo-classes', nargs='*', type=int, help='Optional class id whitelist for YOLO')
     parser.add_argument('--vision-colors', help='Path to JSON colour profile for perception')
     args = parser.parse_args()
 
@@ -405,6 +430,19 @@ def main() -> None:
         features_env = os.environ.get('GOOGLE_VISION_FEATURES')
         if features_env:
             google_features = [item.strip() for item in features_env.split(',') if item.strip()]
+
+    yolo_model = args.yolo_model or os.environ.get('YOLO_MODEL')
+    yolo_conf_env = os.environ.get('YOLO_CONF')
+    yolo_conf = args.yolo_conf if args.yolo_conf is not None else (float(yolo_conf_env) if yolo_conf_env else None)
+    yolo_classes = args.yolo_classes
+    if yolo_classes is None:
+        classes_env = os.environ.get('YOLO_CLASSES')
+        if classes_env:
+            try:
+                yolo_classes = [int(item.strip()) for item in classes_env.split(',') if item.strip()]
+            except ValueError:
+                LOGGER.warning('Ignoring YOLO_CLASSES env var (invalid format): %s', classes_env)
+                yolo_classes = None
 
     run_master(
         simulate=args.simulate,
@@ -429,6 +467,9 @@ def main() -> None:
         google_vision_key=google_key,
         google_vision_endpoint=google_endpoint,
         google_vision_features=google_features,
+        yolo_model=yolo_model,
+        yolo_conf=yolo_conf,
+        yolo_classes=yolo_classes,
         color_config_path=args.vision_colors,
     )
 
